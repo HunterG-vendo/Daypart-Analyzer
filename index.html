@@ -356,6 +356,17 @@ canvas{max-height:200px;}
     </div>
   </div>
   <button class="start-btn" id="start-btn" onclick="loadData()">Analyze →</button>
+  <!-- Optional account budget input -->
+  <div id="account-budget-wrap" style="display:flex;align-items:center;gap:10px;margin-top:12px;">
+    <div style="font-family:var(--mono);font-size:10px;color:var(--muted);">Total Daily SP Budget (optional)</div>
+    <div style="position:relative;">
+      <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);font-family:var(--mono);font-size:12px;color:var(--muted);">$</span>
+      <input id="account-budget-input" type="number" min="0" step="0.01" placeholder="e.g. 500"
+        style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px 10px 7px 22px;font-family:var(--mono);font-size:12px;color:var(--text);outline:none;width:130px;transition:border 0.15s;"
+        onfocus="this.style.borderColor='var(--green)'" onblur="this.style.borderColor='var(--border)'">
+    </div>
+    <div style="font-family:var(--mono);font-size:9px;color:var(--border);">Used in OOB tab to show account-level budget exhaustion</div>
+  </div>
   <p class="upload-footnote">All processing happens in your browser — data never leaves your device.</p>
 </div>
 <button class="qs-trigger tut-trigger-upload" id="tut-trigger-upload" onclick="openTutorial(0)" title="Getting started guide">?</button>
@@ -604,6 +615,26 @@ canvas{max-height:200px;}
   <!-- OOB TAB -->
   <div class="tab-panel" id="panel-oob">
     <div id="oob-summary" class="oob-summary"></div>
+    <!-- Account-level SP budget tracker -->
+    <div id="acct-budget-section" style="display:none;border-bottom:1px solid var(--border);padding:20px 32px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+        <div>
+          <div style="font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:var(--muted);margin-bottom:3px;">Account SP Budget Tracker</div>
+          <div style="font-family:var(--mono);font-size:11px;color:var(--text);">Total daily budget: <span id="acct-budget-display" style="color:var(--green);"></span> — showing when cumulative SP spend crosses your ceiling</div>
+        </div>
+        <div id="acct-budget-hit-badge" style="display:none;background:var(--red-dim);border:1px solid rgba(255,77,106,0.3);border-radius:6px;padding:6px 14px;font-family:var(--mono);font-size:11px;color:var(--red);"></div>
+      </div>
+      <!-- Day tabs -->
+      <div id="acct-budget-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;"></div>
+      <!-- Chart -->
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:16px 20px;">
+        <div style="display:flex;gap:16px;margin-bottom:10px;font-family:var(--mono);font-size:9px;color:var(--muted);">
+          <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#00e5a0;margin-right:4px;vertical-align:middle;"></span>Cumulative Spend</span>
+          <span><span style="display:inline-block;width:14px;height:2px;background:#ff4d6a;margin-right:4px;vertical-align:middle;border-top:2px dashed #ff4d6a;"></span>Budget Ceiling</span>
+        </div>
+        <canvas id="acct-budget-chart" style="width:100%;max-height:200px;"></canvas>
+      </div>
+    </div>
     <div class="oob-layout">
       <div class="oob-sidebar">
         <div class="sidebar-hdr"><span>Campaigns</span><span class="sidebar-count" id="oob-sidebar-count"></span></div>
@@ -696,7 +727,19 @@ function clearFile(type,e){
   else{campaignCSV=null;document.getElementById('dl-campaign').textContent='Drop .csv here';document.getElementById('dh-campaign').innerHTML='Report type: Campaign<br>Period: Last 7 days · Hourly';document.getElementById('badge-campaign').textContent='Required';document.getElementById('badge-campaign').classList.remove('ready');document.getElementById('dz-campaign').classList.remove('loaded');document.getElementById('clear-campaign').classList.remove('visible');document.getElementById('fi-campaign').value='';}
   document.getElementById('start-btn').classList.remove('visible');
 }
-function loadData(){if(!budgetCSV||!campaignCSV){alert('Upload both files.');return;}const p=parseAllData(budgetCSV,campaignCSV);DAYPART=p.daypart;OOB=p.oob;window._cmpAutoDetected=false;showDashboard();}
+let ACCOUNT_BUDGET = null;
+let _acctBudgetChart = null;
+let _acctBudgetDay = 'all';
+
+function loadData(){
+  if(!budgetCSV||!campaignCSV){alert('Upload both files.');return;}
+  const p=parseAllData(budgetCSV,campaignCSV);
+  DAYPART=p.daypart;OOB=p.oob;
+  // Read optional account budget
+  const budgetInput = document.getElementById('account-budget-input');
+  ACCOUNT_BUDGET = budgetInput && budgetInput.value ? parseFloat(budgetInput.value) : null;
+  window._cmpAutoDetected=false;showDashboard();
+}
 function resetToUpload(){document.getElementById('dashboard').style.display='none';document.getElementById('upload-screen').style.display='flex';}
 
 function parseCSV(txt){
@@ -709,7 +752,11 @@ function parseCSV(txt){
     const obj={};headers.forEach((h,i)=>obj[h]=(vals[i]||'').replace(/^"|"$/g,'').trim());return obj;
   });
 }
-function nv(r,col){const v=(r[col]||'').replace(/[$%,]/g,'').trim();return parseFloat(v)||0;}
+function nv(r,col){
+  // Try exact match first, then trimmed (handles Amazon's trailing-space column names)
+  const v=((r[col]!==undefined?r[col]:r[col.trim()])||'').replace(/[$%,]/g,'').trim();
+  return parseFloat(v)||0;
+}
 
 function parseAllData(budgetTxt,campaignTxt){
   const budgetRows=parseCSV(budgetTxt),campaignRows=parseCSV(campaignTxt);
@@ -723,7 +770,7 @@ function parseAllData(budgetTxt,campaignTxt){
     if(!campaignData[name])campaignData[name]={portfolio:r['Portfolio name']||'No Portfolio',days:{}};
     if(!campaignData[name].days[date])campaignData[name].days[date]={};
     if(!campaignData[name].days[date][hour])campaignData[name].days[date][hour]={spend:0,sales:0,orders:0,impressions:0,clicks:0};
-    const m={spend:nv(r,'Spend'),sales:nv(r,'7 Day Total Sales'),orders:nv(r,'7 Day Total Orders (#)'),impressions:nv(r,'Impressions'),clicks:nv(r,'Clicks')};
+    const m={spend:nv(r,'Spend'),sales:nv(r,'7 Day Total Sales '),orders:nv(r,'7 Day Total Orders (#)'),impressions:nv(r,'Impressions'),clicks:nv(r,'Clicks')};
     ['spend','sales','orders','impressions','clicks'].forEach(k=>{accountData[date][hour][k]+=m[k];campaignData[name].days[date][hour][k]+=m[k];});
   });
   const budgetByName={},statsAgg={};
@@ -732,8 +779,8 @@ function parseAllData(budgetTxt,campaignTxt){
     const budget=nv(r,'Budget Amount'),spend=nv(r,'Spend'),isOob=budget>0&&spend>=budget*0.95;
     if(!budgetByName[name])budgetByName[name]={portfolio:r['Portfolio name']||'No Portfolio',days:[]};
     budgetByName[name].days.push({date:r['Date'],budget,spend,is_oob:isOob,pct_used:budget>0?Math.round(spend/budget*1000)/10:0});
-    if(!statsAgg[name])statsAgg[name]={spend:0,clicks:0,orders:0,sales:0};
-    statsAgg[name].spend+=spend;statsAgg[name].clicks+=nv(r,'Clicks');statsAgg[name].orders+=nv(r,'7 Day Total Orders (#)');statsAgg[name].sales+=nv(r,'7 Day Total Sales');
+    if(!statsAgg[name])statsAgg[name]={spend:0,clicks:0,orders:0,sales:0,missed_min:0,missed_max:0};
+    statsAgg[name].spend+=spend;statsAgg[name].clicks+=nv(r,'Clicks');statsAgg[name].orders+=nv(r,'7 Day Total Orders (#)');statsAgg[name].sales+=nv(r,'7 Day Total Sales ');statsAgg[name].missed_min+=nv(r,'Estimated Missed Sales Range Min');statsAgg[name].missed_max+=nv(r,'Estimated Missed Sales Range Max');
   });
   Object.entries(statsAgg).forEach(([n,s])=>{s.cpc=s.clicks?Math.round(s.spend/s.clicks*100)/100:0;s.roas=s.spend?Math.round(s.sales/s.spend*100)/100:0;s.spend=Math.round(s.spend*100)/100;s.sales=Math.round(s.sales*100)/100;s.orders=Math.round(s.orders);});
   const oob=Object.entries(budgetByName).filter(([,v])=>v.days.some(d=>d.is_oob)).map(([name,info])=>{
@@ -2053,6 +2100,149 @@ function renderSingleCmpChart(canvasId, filteredA, filteredB){
   }
 }
 
+// ── ACCOUNT BUDGET TRACKER ───────────────────────────────────
+function renderAcctBudgetSection(){
+  const section = document.getElementById('acct-budget-section');
+  if(!section) return;
+  if(!ACCOUNT_BUDGET || !DAYPART){ section.style.display='none'; return; }
+  section.style.display='block';
+  document.getElementById('acct-budget-display').textContent='$'+ACCOUNT_BUDGET.toFixed(2)+'/day';
+  // Build day tabs
+  const dates = DAYPART.dates||[];
+  const tabs = document.getElementById('acct-budget-tabs');
+  tabs.innerHTML = `<button class="modal-day-btn active" data-day="all" onclick="switchAcctBudgetDay('all',this)" style="font-size:10px;">Avg Day</button>`
+    + dates.map(d=>{
+        const short=d.replace(/\w+ (\w+) (\d+).*/,'$1 $2');
+        return `<button class="modal-day-btn" data-day="${d}" onclick="switchAcctBudgetDay('${d}',this)" style="font-size:10px;">${short}</button>`;
+      }).join('');
+  _acctBudgetDay='all';
+  renderAcctBudgetChart();
+}
+
+function switchAcctBudgetDay(day, btn){
+  _acctBudgetDay=day;
+  document.querySelectorAll('#acct-budget-tabs .modal-day-btn').forEach(b=>b.classList.toggle('active',b.dataset.day===day));
+  renderAcctBudgetChart();
+}
+
+function getAcctHourlySpend(day){
+  // Sum spend across ALL campaigns for each hour
+  const camps = Object.keys(DAYPART.campaigns||{});
+  const dates = day==='all' ? (DAYPART.dates||[]) : [day];
+  const hourTotals = new Array(24).fill(0);
+  const hourCounts = new Array(24).fill(0);
+  camps.forEach(name=>{
+    const days = DAYPART.campaigns[name]?.days||{};
+    dates.forEach(d=>{
+      const hrs = days[d]||{};
+      Object.entries(hrs).forEach(([h,m])=>{
+        hourTotals[+h] += (m.spend||0);
+        hourCounts[+h]++;
+      });
+    });
+  });
+  // Average across days
+  const nDays = dates.length||1;
+  return hourTotals.map((t,i)=>({hour:i, spend:t/nDays}));
+}
+
+function renderAcctBudgetChart(){
+  const hourly = getAcctHourlySpend(_acctBudgetDay);
+  const labels = hourly.map(h=>fmtH(h.hour));
+  // Cumulative spend
+  let cumulative = 0;
+  const cumData = hourly.map(h=>{ cumulative+=h.spend; return +cumulative.toFixed(2); });
+  // Find hour budget is hit
+  const hitHour = cumData.findIndex(v=>v>=ACCOUNT_BUDGET);
+  const badge = document.getElementById('acct-budget-hit-badge');
+  if(hitHour>=0){
+    badge.style.display='block';
+    badge.textContent=`Account budget hit at ${fmtH(hitHour)} ${TZ_NAME}`;
+  } else {
+    badge.style.display='none';
+  }
+  // Bar colors — green before hit, red after
+  const barColors = hourly.map((_,i)=>{
+    const c=cumData[i];
+    if(c>=ACCOUNT_BUDGET) return 'rgba(255,77,106,0.7)';
+    if(c/ACCOUNT_BUDGET>0.85) return 'rgba(255,183,77,0.7)';
+    return 'rgba(0,229,160,0.6)';
+  });
+
+  const canvas = document.getElementById('acct-budget-chart');
+  if(!canvas) return;
+  if(_acctBudgetChart){_acctBudgetChart.destroy();_acctBudgetChart=null;}
+
+  _acctBudgetChart = new Chart(canvas,{
+    type:'bar',
+    data:{
+      labels,
+      datasets:[
+        {
+          label:'Cumulative Spend',
+          data:cumData,
+          type:'line',
+          borderColor:'#00e5a0',
+          backgroundColor:'transparent',
+          borderWidth:2,
+          pointRadius:3,
+          pointBackgroundColor:'#00e5a0',
+          tension:0.3,
+          yAxisID:'y',
+          order:1
+        },
+        {
+          label:'Hourly Spend',
+          data:hourly.map(h=>+h.spend.toFixed(2)),
+          backgroundColor:barColors,
+          borderWidth:0,
+          yAxisID:'y',
+          order:2
+        },
+        {
+          label:'Budget Ceiling',
+          data:new Array(24).fill(ACCOUNT_BUDGET),
+          type:'line',
+          borderColor:'#ff4d6a',
+          borderWidth:2,
+          borderDash:[6,4],
+          pointRadius:0,
+          backgroundColor:'transparent',
+          yAxisID:'y',
+          order:0
+        }
+      ]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:true,
+      interaction:{mode:'index',intersect:false},
+      plugins:{
+        legend:{display:false},
+        tooltip:{backgroundColor:'#181c22',borderColor:'#252b35',borderWidth:1,titleColor:'#fff',bodyColor:'#9ca3af',
+          callbacks:{
+            title:items=>`${items[0].label} ${TZ_NAME}`,
+            label:ctx=>{
+              if(ctx.datasetIndex===0) return `  Cumulative: $${ctx.parsed.y.toFixed(2)}`;
+              if(ctx.datasetIndex===1) return `  Hourly: $${ctx.parsed.y.toFixed(2)}`;
+              return `  Budget: $${ACCOUNT_BUDGET.toFixed(2)}`;
+            },
+            afterBody:items=>{
+              const cum=items.find(i=>i.datasetIndex===0);
+              if(!cum) return [];
+              const pct=(cum.parsed.y/ACCOUNT_BUDGET*100).toFixed(1);
+              return [`  Used: ${pct}% of budget`];
+            }
+          }
+        }
+      },
+      scales:{
+        x:{grid:{color:'rgba(255,255,255,0.03)'},ticks:{color:'#64748b',font:{family:'DM Mono',size:9},maxRotation:0}},
+        y:{grid:{color:'rgba(255,255,255,0.04)'},ticks:{color:'#64748b',font:{family:'DM Mono',size:9},callback:v=>'$'+v}}
+      }
+    }
+  });
+}
+// ── END ACCOUNT BUDGET TRACKER ────────────────────────────────
 function initOOB(){
   const severe=OOB.filter(c=>c.oob_count===7).length,chronic=OOB.filter(c=>c.oob_count>=5).length;
   document.getElementById('oob-sidebar-count').textContent=OOB.length+' OOB';
@@ -2064,6 +2254,8 @@ function initOOB(){
     return`<div class="campaign-item" onclick="selectOobCampaign(${i})" id="oci-${i}"><div><div class="c-name">${short}</div><div class="c-portfolio">${c.portfolio}</div></div><div><span class="c-badge badge-${sev}">${lbl}</span></div></div>`;
   }).join('');
   selectOobCampaign(0);
+  // Account-level budget tracker
+  renderAcctBudgetSection();
 }
 function selectOobCampaign(idx){
   document.querySelectorAll('.campaign-item').forEach(e=>e.classList.remove('active'));
@@ -2096,6 +2288,7 @@ function renderOobDetail(c,preserve){
         <div class="stat-cell"><div class="stat-cell-label">Sales</div><div class="stat-cell-value green">$${(st.sales||0).toFixed(2)}</div><div class="stat-cell-sub">7-day attributed</div></div>
         <div class="stat-cell"><div class="stat-cell-label">ROAS</div><div class="stat-cell-value ${rc}">${(st.roas||0).toFixed(2)}x</div><div class="stat-cell-sub">return on ad spend</div></div>
         <div class="stat-cell"><div class="stat-cell-label">Purchases</div><div class="stat-cell-value">${st.orders||0}</div><div class="stat-cell-sub">7-day orders</div></div>
+        ${(st.missed_min||0)>0||(st.missed_max||0)>0?`<div class="stat-cell" title="Amazon's estimated sales lost due to budget exhaustion"><div class="stat-cell-label" style="color:var(--amber);">Est. Missed Sales</div><div class="stat-cell-value amber">$${(st.missed_min||0).toFixed(0)}–$${(st.missed_max||0).toFixed(0)}</div><div class="stat-cell-sub">due to budget limit</div></div>`:''}
       </div>
     </div>
     <div class="section"><div class="section-title">7-Day Budget Usage</div><div class="oob-calendar" id="oob-cal"></div></div>
@@ -2205,7 +2398,7 @@ document.addEventListener('mouseover',e=>{const cell=e.target.closest('.hour-cel
 document.addEventListener('mousemove',e=>{if(hmTip.style.opacity==='1'){const x=e.clientX,y=e.clientY,tw=hmTip.offsetWidth,th=hmTip.offsetHeight,vw=window.innerWidth,vh=window.innerHeight;hmTip.style.left=(x+tw+12>vw?x-tw-8:x+12)+'px';hmTip.style.top=(y+th+12>vh?y-th-8:y+12)+'px';}});
 document.addEventListener('mousemove',e=>{if(!e.target.closest('.hour-cell'))hmTip.style.opacity='0';});
 
-const vs=document.createElement('div');vs.textContent='v4.5';vs.style.cssText='position:fixed;bottom:10px;right:14px;font-family:DM Mono,monospace;font-size:10px;color:#2e3545;z-index:200;pointer-events:none;letter-spacing:0.05em;';document.body.appendChild(vs);
+const vs=document.createElement('div');vs.textContent='v4.8';vs.style.cssText='position:fixed;bottom:10px;right:14px;font-family:DM Mono,monospace;font-size:10px;color:#2e3545;z-index:200;pointer-events:none;letter-spacing:0.05em;';document.body.appendChild(vs);
 
 initPreloaded();
 });
